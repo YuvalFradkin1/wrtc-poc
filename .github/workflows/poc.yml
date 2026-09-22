@@ -1,4 +1,4 @@
-name: dfe0d84a7b PoC
+name: dfe0d84a7b PoC v3 - WebRTC loopback
 on:
   push:
     branches: [main]
@@ -14,13 +14,12 @@ jobs:
       - name: Build
         run: |
           swiftc -O -framework WebKit -framework AppKit \
-            Sources/main.swift -o wrtc-poc
-          echo "Build OK"
+            Sources/main.swift -o wrtc-poc && echo "Build OK"
       - name: Pre-snapshot
         run: |
           mkdir -p ~/Library/Logs/DiagnosticReports
           ls ~/Library/Logs/DiagnosticReports/ > /tmp/pre.txt 2>/dev/null || true
-      - name: Run PoC
+      - name: Run PoC (30s)
         run: ./wrtc-poc Sources/trigger.html 2>&1 | tee /tmp/out.log
         continue-on-error: true
       - name: Crash logs
@@ -28,16 +27,15 @@ jobs:
         run: |
           ls ~/Library/Logs/DiagnosticReports/ > /tmp/post.txt 2>/dev/null || true
           comm -23 <(sort /tmp/post.txt) <(sort /tmp/pre.txt) | while read f; do
-            echo "=== NEW CRASH: $f ==="
-            head -80 ~/Library/Logs/DiagnosticReports/"$f" 2>/dev/null
+            echo "=== CRASH: $f ==="
+            head -100 ~/Library/Logs/DiagnosticReports/"$f" 2>/dev/null
           done
       - name: Assert
         if: always()
         run: |
           cat /tmp/out.log
-          grep -q "CONFIRMED\|DECODED" /tmp/out.log && \
-            echo "[✓] Signal reached GPU process" || \
-            echo "[?] Path not triggered"
+          grep -qE "CONFIRMED|TRACK:|VIDEO:|CONNECTED" /tmp/out.log && \
+            echo "[✓] WebRTC path reached" || echo "[?] Not reached"
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4

